@@ -1,0 +1,283 @@
+---
+title: "Elearning data analysis"
+output: html_document
+date: "2025-02-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages
+```{r}
+library(tidyverse)
+library(caret) #for classification and regression training
+library(ranger) #for random forests
+library(e1071) #for statistics functions
+library(tidylog)
+library(dataedu) #package for educational data
+```
+
+## Import and view data
+```{r}
+setwd("D:/Data-analytics-project/Elearning-data-analysis")
+df <- dataedu::sci_mo_with_text
+glimpse(df)
+```
+
+## Data processing
+Select important variables
+```{r}
+df <-
+  df %>%
+  select(
+    int, #student think this course is interesting
+    uv, #utility value: what I'm learning in this course is relevant to my life
+    pc, #perceived competence: this topic is one of my best subjects
+    time_spent, #time spent in the course
+    final_grade,
+    subject,
+    enrollment_reason,
+    semester,
+    enrollment_status,
+    cogproc, #student's cognitive processing
+    social, #social-related discourse in discussion board posts
+    posemo, #positive emotions in discussion board posts
+    negemo, #negative emotions in discussion board posts
+    n #number of discussion board posts in the course in the semester
+  )
+```
+
+## Analysis
+### Analyze data
+```{r}
+# Check number of rows in dataset
+nrow(df)
+# Drop rows with missing data (N/A)
+df<-na.omit(df)
+# Check number of rows after dropping N/A
+nrow(df)
+```
+
+```{r}
+glimpse(df)
+# Determine if there are variables with no variability
+nearZeroVar(df, saveMetrics=TRUE)
+```
+
+zeroVar column of enrollment_status is True, so we will remove it. Variables with no variability may cause problems in some models.
+```{r}
+df <- 
+  df %>% 
+  select(-enrollment_status)
+```
+
+```{r}
+# Convert string categorical variables to factors
+df <-
+  df %>%
+  mutate_if(is.character, as.factor)
+```
+
+### Prepare train and test sets
+
+```{r}
+# Set seed
+set.seed(2025)
+# Train 70%, Test 30%
+# Create train set
+trainIdx <- createDataPartition(df$final_grade,
+                                p=.7,
+                                list=FALSE,
+                                times=1)
+
+# Add new variable to dataset temporarily
+# Select rows according to their row number
+df <-
+  df %>%
+  mutate(temp_id = 1:464)
+```
+```{r}
+# Filter dataset to get only rows indicated trainIdx vector
+df_train <-
+  df %>%
+  filter(temp_id %in% trainIdx)
+```
+```{r}
+# Filter out to get test set
+df_test <-
+  df %>%
+  filter(!temp_id %in% trainIdx)
+```
+```{r}
+# Delete temp_id from the original data
+df <-
+  df %>%
+  select(-temp_id)
+```
+
+```{r}
+df_train <-
+  df_train %>%
+  select(-temp_id)
+
+df_test <-
+  df_test %>%
+  select(-temp_id)
+```
+
+### Estimate the model
+#### Random forests - bootstrap resampling
+```{r}
+# Set seed
+set.seed(2025)
+# Run random forest model
+# Final grade is y, other variables are x
+# Syntax: final_grade ~. => y ~ all other variables except y
+# Resampling method: Bootstrap resampling
+rf_fit <- train(final_grade ~.,
+                data = df_train,
+                method = "ranger")
+rf_fit
+# Results: Best RMSE: 13.79, Best R^2: 0.6
+```
+#### Random forests - Cross validation
+```{r}
+#Set seed
+set.seed(2025)
+# Use cross validation
+train_control <-
+  trainControl(method="repeatedcv",
+               number = 10, #10 folds
+               repeats = 10) #repeat 10 times
+
+rf_fit1 <-
+  train(final_grade ~ .,
+        data=df_train,
+        method="ranger",
+        trControl=train_control)
+
+rf_fit1
+# Result: Best RMSE: 13.2, Best R^2: 0.63
+```
+#### Tuning random forest model
+Previously: min.node.size is fixed to 5
+Now: change min.node.size and mtry
+```{r}
+set.seed(2025)
+
+# Create a grid of different values of mtry, split rules and min node sizes to test
+tune_grid <-
+  expand.grid(
+    mtry = c(2, 3, 7, 10, 19),
+    splitrule = c("variance", "extratrees"),
+    min.node.size=c(1, 5, 10, 15, 20)
+  )
+
+# Fit a new model using tuning grid
+rf_fit2 <-
+  train(final_grade~.,
+        data=df_train,
+        method="ranger",
+        tuneGrid=tune_grid)
+
+rf_fit2
+# Result: Best MRSE: 13.82, Best R^2: 0.59
+```
+
+```{r}
+# See details of final model output of rf_fit2
+rf_fit2$finalModel
+```
+### Examine predictive accuracy on test
+```{r}
+set.seed(2025)
+# Create new testing data including predicted values
+df_test_augmented <-
+  df_test %>%
+  mutate(pred=predict(rf_fit2, df_test),
+         obs=final_grade)
+```
+
+```{r}
+# Transform object to data frame
+defaultSummary(as.data.frame(df_test_augmented))
+
+```
+* RMSE on test set = 12.07 => better than RMSE 13.82 of train set.
+* R^2 on test set = 0.68 => better than R^2 0.59 of train set
+* Therefore, the model performs well on unseen data (Test data)
+
+### Results
+#### Variable Importance
+```{r}
+set.seed(2025)
+# Learn which variables contribute most strongly to the model prediction
+rf_fit2_imp <-
+  train(
+    final_grade ~.,
+    data=df_train,
+    method="ranger",
+    tuneGrid=tune_grid,
+    importance="permutation"
+  )
+
+#Extract variable importance from the new model
+varImp(rf_fit2_imp)
+```
+
+#### Visualize variable importance
+```{r}
+varImp(rf_fit2_imp) %>%
+    pluck(1) %>%
+    rownames_to_column("var") %>%
+    ggplot(aes(x = reorder(var, Overall), y = Overall)) +
+    geom_col(fill = "#D55E00") +
+    coord_flip() +
+    theme_light()
+```
+
+Insights
+* Most important: n: number of student's discussion posts
+* 2nd most: subject Forensic Science: enrolled in Forensic Science course has great impact on student's
+* 3rd most: timespent: time student spent in the course
+
+### Compare random forest to regression
+```{r}
+# Convert character variables to factors
+df_train_lm <-
+  df_train %>%
+  mutate_if(is.character, as.factor)
+```
+
+```{r}
+# Create a linear regression model
+lm_fit <-
+  train(final_grade~.,
+	data=df_train_lm,
+	method="lm")
+
+# Append predicted values to train set for linear model
+df_train_lm <-
+  df_train %>%
+  mutate(obs=final_grade,
+         pred=predict(lm_fit, df_train_lm))
+```
+
+```{r}
+#Append predicted values to train set for random forest
+df_train_rf <-
+  df_train %>%
+  mutate(pred=predict(rf_fit2, df_train),
+         obs=final_grade)
+```
+
+```{r}
+# Summarize linear model
+defaultSummary(as.data.frame(df_train_lm))
+# Summarize random forest
+defaultSummary(as.data.frame(df_train_rf))
+```
+## Conclusions
+* Random forest has higher R squared (0.97 compared to 0.51 for the regression model)
+* Random forest has lower RMSE, meaning random forest fits the data better than linear model.
