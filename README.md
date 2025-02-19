@@ -5,6 +5,6 @@
 * Identified significant factors affecting grade prediction results based on overall importance: the number of each student’s discussion posts (importance: 100), subject they learned (25.96) & time they spent (12.66).
 
 # Note
-* .Rmd file: code in R markdwon file
+* Rmd file: code in R markdwon file
 * HTML file: code with output, in HTML format
 * pdf file: code with output, in pdf format
